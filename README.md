@@ -374,10 +374,15 @@ This makes capture feel instant — the pad knows when you've pulled the pen awa
 | Moving Average | Procreate StreamLine | Simple but fixed lag proportional to window size |
 | Kalman Filter | Android stylus prediction | Excellent but moderate complexity |
 
+The N-euro Predictor (UbiComp 2023) remains SOTA for neural pen prediction as of 2025. The closest newer work is a [self-distillation multi-task model](https://dl.acm.org/doi/10.1145/3743742) (PACM HCI 2025) achieving 0.47px error at 6ms prediction, and [TA-GNN](https://arxiv.org/abs/2503.13034) (OzCHI 2024) for time-agnostic motion prediction. However, neural approaches solve display latency compensation for real-time drawing — for signature capture and export, the 1-Euro filter's adaptive jitter removal is the right tool.
+
 References:
 - [1-Euro Filter](https://gery.casiez.net/1euro/) — Casiez, Roussel, Vogel (CHI 2012)
 - [Google Ink Stroke Modeler](https://github.com/google/ink-stroke-modeler) — Spring-mass-damper pipeline
-- [N-euro Predictor](https://dl.acm.org/doi/abs/10.1145/3610884) — Wang et al. (UbiComp 2023)
+- [N-euro Predictor](https://dl.acm.org/doi/abs/10.1145/3610884) — Shao et al. (UbiComp 2023)
+- [Self-Distillation Multi-task Learning](https://dl.acm.org/doi/10.1145/3743742) — Liu et al. (PACM HCI 2025)
+- [TA-GNN / NeverLagging](https://arxiv.org/abs/2503.13034) — Li et al. (OzCHI 2024)
+- [GRU-CNN Stylus Prediction](https://link.springer.com/chapter/10.1007/978-3-030-50726-8_32) — Kushnirenko & Alkhimova (Samsung Research, 2020)
 - [LaViola - Double Exp. Smoothing vs Kalman](https://cs.brown.edu/people/jlaviola/pubs/kfvsexp_final_laviola.pdf)
 
 ## How This Was Built
