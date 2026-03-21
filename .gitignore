@@ -1,6 +1,7 @@
 topaz
 Topaz.app/Contents/MacOS/Topaz
 *.png
+!og.png
 *.jpg
 *.jpeg
 *.tiff
