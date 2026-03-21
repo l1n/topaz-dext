@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Topaz Signature Capture</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+h1 { font-size: 1.4em; margin-bottom: 8px; color: #fff; }
+.subtitle { font-size: 0.85em; color: #888; margin-bottom: 20px; }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-bottom: 16px; }
+button { background: #2d2d44; color: #e0e0e0; border: 1px solid #444; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em; transition: all 0.15s; }
+button:hover { background: #3d3d5c; border-color: #666; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.primary { background: #4a6fa5; border-color: #5a8fbf; }
+button.primary:hover { background: #5a8fbf; }
+button.danger { background: #7a3040; border-color: #9a4050; }
+button.danger:hover { background: #9a4050; }
+button.success { background: #2a6a4a; border-color: #3a8a5a; }
+.canvas-wrap { background: #fff; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,0.4); margin-bottom: 16px; position: relative; }
+canvas { display: block; border-radius: 8px; }
+.status { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; font-size: 0.85em; }
+.status .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.dot.disconnected { background: #e74c3c; }
+.dot.connected { background: #2ecc71; }
+.dot.capturing { background: #f39c12; animation: pulse 0.8s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.stats { font-size: 0.8em; color: #999; }
+.controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; margin-bottom: 12px; }
+.controls label { font-size: 0.85em; color: #aaa; }
+.controls select, .controls input[type=range], .controls input[type=color] { background: #2d2d44; color: #e0e0e0; border: 1px solid #444; border-radius: 4px; padding: 4px; }
+.controls input[type=range] { width: 80px; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #2ecc71; color: #fff; padding: 10px 24px; border-radius: 8px; font-size: 0.9em; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100; }
+.toast.show { opacity: 1; }
+.preview-area { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
+.preview-area img { max-height: 80px; border: 1px solid #444; border-radius: 4px; background: repeating-conic-gradient(#333 0% 25%, #2a2a2a 0% 50%) 50% / 16px 16px; }
+</style>
+</head>
+<body>
+
+<h1>Topaz Signature Capture</h1>
+<p class="subtitle">Connect your Topaz pad via USB &mdash; Chrome/Edge required (Web Serial API)</p>
+
+<div class="status">
+  <span><span class="dot disconnected" id="statusDot"></span> <span id="statusText">Disconnected</span></span>
+  <span class="stats" id="stats"></span>
+</div>
+
+<div class="controls">
+  <label>Ink: <input type="color" id="inkColor" value="#000000"></label>
+  <label>Width: <input type="range" id="inkWidth" min="1" max="8" value="3" step="0.5"> <span id="inkWidthVal">3</span></label>
+  <label>Stabilize: <select id="stabilize">
+    <option value="0">Off</option>
+    <option value="1">Light</option>
+    <option value="2" selected>Medium</option>
+    <option value="3">Heavy</option>
+  </select></label>
+  <label>Model: <select id="model">
+    <option value="SignatureGem1X5" selected>SignatureGem 1x5</option>
+    <option value="SigLiteLCD1X5">SigLite LCD 1x5</option>
+    <option value="SignatureGem4X5">SignatureGem 4x5</option>
+    <option value="SigLite1X5">SigLite 1x5</option>
+    <option value="ClipGem">ClipGem</option>
+  </select></label>
+</div>
+
+<div class="toolbar">
+  <button class="primary" id="connectBtn" onclick="toggleConnect()">Connect Pad</button>
+  <button id="clearBtn" onclick="clearCanvas()" disabled>Clear</button>
+  <button class="success" id="copyBtn" onclick="copyToClipboard()" disabled>Copy to Clipboard</button>
+  <button id="savePngBtn" onclick="savePNG()" disabled>Save PNG</button>
+  <button id="saveSvgBtn" onclick="saveSVG()" disabled>Save SVG</button>
+  <button id="savePdfBtn" onclick="savePDF()" disabled>Save PDF</button>
+</div>
+
+<div class="canvas-wrap">
+  <canvas id="sigCanvas" width="800" height="240"></canvas>
+</div>
+
+<div class="preview-area" id="previewArea"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+// -- Models --
+const MODELS = {
+  SignatureGem1X5:    { xStart:400, xStop:2400, yStart:350, yStop:950,  logicalX:2000, logicalY:600,  baud:19200, filter:4, fmt:0 },
+  SignatureGemLCD1X5: { xStart:400, xStop:2400, yStart:350, yStop:1250, logicalX:2000, logicalY:900,  baud:19200, filter:4, fmt:1 },
+  SignatureGem4X5:    { xStart:500, xStop:2650, yStart:700, yStop:2100, logicalX:2150, logicalY:1400, baud:19200, filter:4, fmt:0 },
+  SigLite1X5:         { xStart:500, xStop:2650, yStart:700, yStop:2100, logicalX:2150, logicalY:1400, baud:19200, filter:2, fmt:0 },
+  SigLiteLCD1X5:      { xStart:400, xStop:2400, yStart:350, yStop:1050, logicalX:2000, logicalY:700,  baud:19200, filter:4, fmt:0 },
+  ClipGem:            { xStart:485, xStop:2800, yStart:170, yStop:3200, logicalX:2315, logicalY:3030, baud:9600,  filter:2, fmt:0 },
+};
+
+// -- State --
+let port = null, reader = null, reading = false;
+let strokes = [], currentStroke = [], penWasDown = false;
+let totalPoints = 0, currentPressure = 0;
+let packetState = 0, packetBuf = [];
+let filterXBuf = [], filterYBuf = [];
+
+const canvas = document.getElementById('sigCanvas');
+const ctx = canvas.getContext('2d');
+
+function getModel() { return MODELS[document.getElementById('model').value]; }
+function getInkColor() { return document.getElementById('inkColor').value; }
+function getInkWidth() { return parseFloat(document.getElementById('inkWidth').value); }
+function getStabilize() { return parseInt(document.getElementById('stabilize').value); }
+
+document.getElementById('inkWidth').oninput = function() {
+  document.getElementById('inkWidthVal').textContent = this.value;
+};
+
+// -- Serial --
+async function toggleConnect() {
+  if (port) { await disconnect(); return; }
+  if (!navigator.serial) { toast('Web Serial not supported. Use Chrome or Edge.', true); return; }
+  try {
+    port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x0403 }] });
+    const m = getModel();
+    await port.open({ baudRate: m.baud, dataBits: m.fmt === 1 ? 7 : 8, parity: 'odd', stopBits: 1, bufferSize: 4096 });
+    setStatus('connected', 'Connected');
+    document.getElementById('connectBtn').textContent = 'Disconnect';
+    document.getElementById('connectBtn').classList.add('danger');
+    document.getElementById('connectBtn').classList.remove('primary');
+    reading = true;
+    readLoop();
+  } catch (e) {
+    toast('Connection failed: ' + e.message, true);
+    port = null;
+  }
+}
+
+async function disconnect() {
+  reading = false;
+  try {
+    if (reader) { await reader.cancel(); reader.releaseLock(); reader = null; }
+    if (port) { await port.close(); }
+  } catch (e) {}
+  port = null;
+  setStatus('disconnected', 'Disconnected');
+  document.getElementById('connectBtn').textContent = 'Connect Pad';
+  document.getElementById('connectBtn').classList.remove('danger');
+  document.getElementById('connectBtn').classList.add('primary');
+}
+
+async function readLoop() {
+  while (port && port.readable && reading) {
+    reader = port.readable.getReader();
+    try {
+      while (reading) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        processBytes(value);
+      }
+    } catch (e) {
+      if (reading) console.error('Read error:', e);
+    } finally {
+      try { reader.releaseLock(); } catch(e) {}
+      reader = null;
+    }
+  }
+  if (reading) await disconnect();
+}
+
+// -- Packet Parsing --
+function isStartByte(b) {
+  return getModel().fmt === 0 ? (b & 0x80) !== 0 : (b & 0x70) !== 0x30;
+}
+
+function processBytes(data) {
+  for (const byte of data) {
+    const start = isStartByte(byte);
+    switch (packetState) {
+      case 0:
+        if (start) { packetBuf = [byte]; packetState = 1; }
+        break;
+      case 1:
+        if (start) { packetBuf = [byte]; }
+        else { packetBuf.push(byte); packetState = 2; }
+        break;
+      case 2:
+        if (start) { packetBuf = [byte]; packetState = 1; }
+        else {
+          packetBuf.push(byte);
+          if (packetBuf.length === 5) {
+            const fmt = getModel().fmt;
+            const bad = fmt === 0 && packetBuf.slice(1).some(b => b & 0x80);
+            if (!bad) decodePacket(packetBuf, fmt);
+            packetBuf = [];
+            packetState = 0;
+          }
+        }
+        break;
+    }
+  }
+}
+
+function decodePacket(buf, fmt) {
+  const status = buf[0];
+  const penDown = (status & 0x01) !== 0;
+  const type = (status >> 2) & 7;
+
+  let rawX, rawY;
+  if (fmt === 0) {
+    rawX = ((buf[2] & 0x1F) << 7) | (buf[1] & 0x7F);
+    rawY = ((buf[4] & 0x1F) << 7) | (buf[3] & 0x7F);
+  } else {
+    rawX = ((buf[2] & 0x3F) << 6) | (buf[1] & 0x3F);
+    rawY = ((buf[4] & 0x3F) << 6) | (buf[3] & 0x3F);
+  }
+
+  if (rawX === 0x0FFF && rawY === 0x0FFF) return;
+  if (type === 7) { currentPressure = ((buf[4] & 0x07) << 7) | (buf[3] & 0x7F); return; }
+  if (type !== 0 && type !== 1 && type !== 4) return;
+
+  const m = getModel();
+  let x = (rawX - m.xStart) * m.logicalX / (m.xStop - m.xStart);
+  let y = (rawY - m.yStart) * m.logicalY / (m.yStop - m.yStart);
+  x = Math.max(0, Math.min(m.logicalX, x));
+  y = Math.max(0, Math.min(m.logicalY, y));
+
+  // Point filter
+  const filterSize = m.filter;
+  filterXBuf.push(x); filterYBuf.push(y);
+  if (filterXBuf.length > filterSize) { filterXBuf.shift(); filterYBuf.shift(); }
+  const fx = filterXBuf.reduce((a,b) => a+b, 0) / filterXBuf.length;
+  const fy = filterYBuf.reduce((a,b) => a+b, 0) / filterYBuf.length;
+
+  if (penDown) {
+    if (!penWasDown) {
+      currentStroke = [{ x: fx, y: fy, p: currentPressure }];
+      penWasDown = true;
+      setStatus('capturing', 'Capturing...');
+    } else {
+      currentStroke.push({ x: fx, y: fy, p: currentPressure });
+      // Draw live segment
+      const prev = currentStroke[currentStroke.length - 2];
+      drawSegment(prev.x, prev.y, fx, fy, currentPressure);
+    }
+    totalPoints++;
+    updateStats();
+  } else if (penWasDown) {
+    if (currentStroke.length >= 2) {
+      strokes.push(currentStroke);
+    }
+    currentStroke = [];
+    penWasDown = false;
+    filterXBuf = []; filterYBuf = [];
+    setStatus('connected', 'Connected');
+    enableButtons(true);
+  }
+}
+
+// -- Drawing --
+function canvasScale() {
+  const m = getModel();
+  return { sx: canvas.width / m.logicalX, sy: canvas.height / m.logicalY };
+}
+
+function drawSegment(x0, y0, x1, y1, pressure) {
+  const { sx, sy } = canvasScale();
+  const w = getInkWidth();
+  const color = getInkColor();
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = w * Math.min(sx, sy);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x0 * sx, y0 * sy);
+  ctx.lineTo(x1 * sx, y1 * sy);
+  ctx.stroke();
+}
+
+function redraw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const { sx, sy } = canvasScale();
+  const w = getInkWidth();
+  ctx.strokeStyle = getInkColor();
+  ctx.lineWidth = w * Math.min(sx, sy);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  for (const stroke of strokes) {
+    if (stroke.length < 2) continue;
+    ctx.beginPath();
+    ctx.moveTo(stroke[0].x * sx, stroke[0].y * sy);
+    for (let i = 1; i < stroke.length; i++) {
+      ctx.lineTo(stroke[i].x * sx, stroke[i].y * sy);
+    }
+    ctx.stroke();
+  }
+}
+
+function clearCanvas() {
+  strokes = []; currentStroke = []; totalPoints = 0;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  updateStats();
+  enableButtons(false);
+  document.getElementById('previewArea').innerHTML = '';
+}
+
+// -- Stabilization --
+function stabilize(pts, level) {
+  if (level <= 0 || pts.length < 3) return pts;
+  // RDP simplification for level >= 2
+  let points = pts;
+  if (level >= 2) points = rdpSimplify(points, level * 0.5);
+  // Catmull-Rom smoothing
+  const tension = Math.min(1.0, level * 0.5);
+  const result = [points[0]];
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[Math.min(points.length - 1, i + 1)];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const steps = Math.max(2, Math.floor(dist / 3));
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps, t2 = t*t, t3 = t2*t;
+      const x = 0.5 * ((2*p1.x) + (-p0.x+p2.x)*t*tension + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2*tension + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3*tension);
+      const y = 0.5 * ((2*p1.y) + (-p0.y+p2.y)*t*tension + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2*tension + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3*tension);
+      result.push({ x, y, p: p1.p });
+    }
+  }
+  return result;
+}
+
+function rdpSimplify(pts, epsilon) {
+  if (pts.length <= 2) return pts;
+  let maxDist = 0, maxIdx = 0;
+  const a = pts[0], b = pts[pts.length - 1];
+  const dx = b.x - a.x, dy = b.y - a.y, lenSq = dx*dx + dy*dy;
+  for (let i = 1; i < pts.length - 1; i++) {
+    let d;
+    if (lenSq < 1e-10) { const ex = pts[i].x - a.x, ey = pts[i].y - a.y; d = Math.sqrt(ex*ex+ey*ey); }
+    else {
+      const t = Math.max(0, Math.min(1, ((pts[i].x-a.x)*dx+(pts[i].y-a.y)*dy)/lenSq));
+      const ex = pts[i].x - (a.x+t*dx), ey = pts[i].y - (a.y+t*dy);
+      d = Math.sqrt(ex*ex+ey*ey);
+    }
+    if (d > maxDist) { maxDist = d; maxIdx = i; }
+  }
+  if (maxDist > epsilon) {
+    const left = rdpSimplify(pts.slice(0, maxIdx + 1), epsilon);
+    const right = rdpSimplify(pts.slice(maxIdx), epsilon);
+    return left.slice(0, -1).concat(right);
+  }
+  return [pts[0], pts[pts.length - 1]];
+}
+
+// -- Export helpers --
+function getStrokesBounds(exportStrokes) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const s of exportStrokes) {
+    for (const p of s) {
+      if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
+    }
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function getExportStrokes() {
+  const level = getStabilize();
+  return strokes.map(s => stabilize(s, level));
+}
+
+function renderCroppedCanvas(exportStrokes, padding, scale) {
+  const w = getInkWidth();
+  const b = getStrokesBounds(exportStrokes);
+  const pad = w * 2 + padding;
+  const cw = Math.ceil((b.maxX - b.minX + pad * 2) * scale);
+  const ch = Math.ceil((b.maxY - b.minY + pad * 2) * scale);
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = cw; offCanvas.height = ch;
+  const c = offCanvas.getContext('2d');
+  // Transparent background
+  c.strokeStyle = getInkColor();
+  c.lineWidth = w * scale;
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  for (const stroke of exportStrokes) {
+    if (stroke.length < 2) continue;
+    c.beginPath();
+    c.moveTo((stroke[0].x - b.minX + pad) * scale, (stroke[0].y - b.minY + pad) * scale);
+    for (let i = 1; i < stroke.length; i++) {
+      c.lineTo((stroke[i].x - b.minX + pad) * scale, (stroke[i].y - b.minY + pad) * scale);
+    }
+    c.stroke();
+  }
+  return offCanvas;
+}
+
+// -- Exports --
+async function copyToClipboard() {
+  const s = getExportStrokes();
+  if (!s.length) return;
+  const offCanvas = renderCroppedCanvas(s, 10, 2);
+  offCanvas.toBlob(async blob => {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      toast('Copied to clipboard');
+    } catch (e) { toast('Copy failed: ' + e.message, true); }
+  }, 'image/png');
+}
+
+function savePNG() {
+  const s = getExportStrokes();
+  if (!s.length) return;
+  const offCanvas = renderCroppedCanvas(s, 10, 3);
+  const a = document.createElement('a');
+  a.download = `signature_${timestamp()}.png`;
+  a.href = offCanvas.toDataURL('image/png');
+  a.click();
+  addPreview(a.href);
+  toast('PNG saved');
+}
+
+function saveSVG() {
+  const s = getExportStrokes();
+  if (!s.length) return;
+  const w = getInkWidth();
+  const b = getStrokesBounds(s);
+  const pad = w * 2 + 10;
+  const sw = Math.ceil(b.maxX - b.minX + pad * 2);
+  const sh = Math.ceil(b.maxY - b.minY + pad * 2);
+
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${sw} ${sh}" width="${sw}" height="${sh}">`;
+  for (const stroke of s) {
+    if (stroke.length < 2) continue;
+    const pts = stroke.map(p => `${(p.x - b.minX + pad).toFixed(1)},${(p.y - b.minY + pad).toFixed(1)}`).join(' ');
+    svg += `\n  <polyline points="${pts}" fill="none" stroke="${getInkColor()}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }
+  svg += '\n</svg>';
+
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const a = document.createElement('a');
+  a.download = `signature_${timestamp()}.svg`;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  toast('SVG saved');
+}
+
+function savePDF() {
+  const s = getExportStrokes();
+  if (!s.length) return;
+  // Render to PNG then wrap in minimal PDF
+  const offCanvas = renderCroppedCanvas(s, 10, 3);
+  const imgData = offCanvas.toDataURL('image/png');
+
+  // Use canvas to create a printable page
+  const printWin = window.open('', '_blank');
+  printWin.document.write(`
+    <html><head><title>Signature</title>
+    <style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;}img{max-width:90vw;}</style>
+    </head><body><img src="${imgData}" onload="window.print();window.close()"></body></html>
+  `);
+  toast('PDF print dialog opened');
+}
+
+// -- UI --
+function setStatus(state, text) {
+  const dot = document.getElementById('statusDot');
+  dot.className = 'dot ' + state;
+  document.getElementById('statusText').textContent = text;
+}
+
+function updateStats() {
+  document.getElementById('stats').textContent = `${totalPoints} points, ${strokes.length} strokes`;
+}
+
+function enableButtons(en) {
+  document.getElementById('clearBtn').disabled = !en;
+  document.getElementById('copyBtn').disabled = !en;
+  document.getElementById('savePngBtn').disabled = !en;
+  document.getElementById('saveSvgBtn').disabled = !en;
+  document.getElementById('savePdfBtn').disabled = !en;
+}
+
+function toast(msg, error = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.background = error ? '#e74c3c' : '#2ecc71';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+function timestamp() {
+  const d = new Date();
+  return d.toISOString().replace(/[-:T]/g, '').slice(0, 15);
+}
+
+function addPreview(dataUrl) {
+  const area = document.getElementById('previewArea');
+  const img = document.createElement('img');
+  img.src = dataUrl;
+  area.prepend(img);
+  if (area.children.length > 5) area.lastChild.remove();
+}
+
+// Resize canvas to fit model aspect ratio
+function resizeCanvas() {
+  const m = getModel();
+  const maxW = Math.min(800, window.innerWidth - 40);
+  const aspect = m.logicalY / m.logicalX;
+  canvas.width = maxW;
+  canvas.height = Math.round(maxW * aspect);
+  redraw();
+}
+
+document.getElementById('model').onchange = () => { resizeCanvas(); clearCanvas(); };
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// Check Web Serial support
+if (!navigator.serial) {
+  document.getElementById('connectBtn').disabled = true;
+  setStatus('disconnected', 'Web Serial not supported — use Chrome or Edge');
+}
+</script>
+</body>
+</html>
