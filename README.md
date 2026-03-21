@@ -2,7 +2,7 @@
 
 Native macOS driver and capture tool for [Topaz Systems](https://www.topazsystems.com/) USB signature pads. No official drivers needed — connects directly via the reverse-engineered serial protocol.
 
-**[Try the web version](https://l1n.github.io/topaz-dext/)** (Chrome/Edge, Web Serial API)
+**[Try the web version](https://l1n.github.io/topaz-dext/)** (Chrome/Edge/Firefox with [Web Serial addon](https://addons.mozilla.org/en-US/firefox/addon/webserial-for-firefox/))
 
 ## Features
 
@@ -280,7 +280,7 @@ import { TopazPad, type Stroke, type Point } from 'https://l1n.github.io/topaz-d
 | `strokesBounds(strokes)` | Compute bounding box |
 | `MODELS` | Model configuration database |
 
-Requires Web Serial API (Chrome 89+ / Edge 89+). See [browser support](https://caniuse.com/web-serial).
+Requires Web Serial API (Chrome 89+ / Edge 89+). Firefox is supported via the [Web Serial for Firefox](https://addons.mozilla.org/en-US/firefox/addon/webserial-for-firefox/) addon. See [browser support](https://caniuse.com/web-serial).
 
 ## Swift Library (TopazKit)
 
