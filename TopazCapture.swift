@@ -109,96 +109,116 @@ struct PointFilter {
     mutating func clear() { xBuf.removeAll(); yBuf.removeAll() }
 }
 
-// MARK: - Stabilization
+// MARK: - 1-Euro Filter (Casiez et al., CHI 2012)
+// Adaptive low-pass filter: heavy smoothing at low speed (removes jitter),
+// light smoothing at high speed (reduces lag). SOTA for pen input.
 
-/// Applies Catmull-Rom spline interpolation to smooth a stroke
-func stabilizeStroke(_ points: [(Double, Double)], tension: Double = 0.5) -> [(Double, Double)] {
-    guard points.count >= 3 else { return points }
-    var result: [(Double, Double)] = [points[0]]
-    let n = points.count
+class OneEuroFilter {
+    let mincutoff: Double  // minimum cutoff frequency (Hz) — lower = smoother at rest
+    let beta: Double       // speed coefficient — higher = less lag during fast motion
+    let dcutoff: Double    // cutoff for derivative filter
 
-    for i in 0..<(n - 1) {
-        let p0 = points[max(0, i - 1)]
-        let p1 = points[i]
-        let p2 = points[min(n - 1, i + 1)]
-        let p3 = points[min(n - 1, i + 2)]
+    private var xPrev: Double = 0, dxPrev: Double = 0
+    private var yPrev: Double = 0, dyPrev: Double = 0
+    private var tPrev: TimeInterval = 0
+    private var initialized = false
 
-        // Subdivide each segment into steps proportional to distance
-        let dx = p2.0 - p1.0, dy = p2.1 - p1.1
-        let dist = sqrt(dx*dx + dy*dy)
-        let steps = max(2, Int(dist / 3))
+    init(mincutoff: Double = 1.0, beta: Double = 0.007, dcutoff: Double = 1.0) {
+        self.mincutoff = mincutoff
+        self.beta = beta
+        self.dcutoff = dcutoff
+    }
 
-        for s in 1...steps {
-            let t = Double(s) / Double(steps)
-            let t2 = t * t, t3 = t2 * t
-
-            let x = 0.5 * ((2*p1.0) +
-                (-p0.0 + p2.0) * t * tension +
-                (2*p0.0 - 5*p1.0 + 4*p2.0 - p3.0) * t2 * tension +
-                (-p0.0 + 3*p1.0 - 3*p2.0 + p3.0) * t3 * tension)
-            let y = 0.5 * ((2*p1.1) +
-                (-p0.1 + p2.1) * t * tension +
-                (2*p0.1 - 5*p1.1 + 4*p2.1 - p3.1) * t2 * tension +
-                (-p0.1 + 3*p1.1 - 3*p2.1 + p3.1) * t3 * tension)
-            result.append((x, y))
+    /// Convenience init from stabilization level (0-3)
+    convenience init(level: Int) {
+        switch level {
+        case 0: self.init(mincutoff: 100, beta: 0, dcutoff: 1)      // effectively off
+        case 1: self.init(mincutoff: 1.5, beta: 0.01, dcutoff: 1)   // light
+        case 2: self.init(mincutoff: 0.8, beta: 0.005, dcutoff: 1)  // medium
+        default: self.init(mincutoff: 0.3, beta: 0.002, dcutoff: 1) // heavy
         }
     }
-    return result
+
+    private func alpha(_ cutoff: Double, dt: Double) -> Double {
+        let tau = 1.0 / (2.0 * .pi * cutoff)
+        return 1.0 / (1.0 + tau / dt)
+    }
+
+    func filter(x: Double, y: Double, timestamp: TimeInterval) -> (Double, Double) {
+        if !initialized {
+            xPrev = x; yPrev = y; tPrev = timestamp; initialized = true
+            return (x, y)
+        }
+        let dt = max(0.001, timestamp - tPrev)
+        tPrev = timestamp
+
+        // Derivatives
+        let dx = (x - xPrev) / dt
+        let dy = (y - yPrev) / dt
+        let aD = alpha(dcutoff, dt: dt)
+        let fdx = aD * dx + (1 - aD) * dxPrev
+        let fdy = aD * dy + (1 - aD) * dyPrev
+        dxPrev = fdx; dyPrev = fdy
+
+        // Adaptive cutoff based on speed
+        let speed = sqrt(fdx * fdx + fdy * fdy)
+        let cutoff = mincutoff + beta * speed
+        let a = alpha(cutoff, dt: dt)
+
+        // Filter position
+        let fx = a * x + (1 - a) * xPrev
+        let fy = a * y + (1 - a) * yPrev
+        xPrev = fx; yPrev = fy
+        return (fx, fy)
+    }
+
+    func reset() { initialized = false; dxPrev = 0; dyPrev = 0 }
 }
 
-/// Applies Ramer-Douglas-Peucker simplification then smoothing
-func stabilizeSignature(_ sig: SignatureData, level: Int = 1) {
-    for i in 0..<sig.strokes.count {
-        var stroke = sig.strokes[i]
-        if level >= 2 {
-            // RDP simplification to remove jitter
-            stroke = rdpSimplify(stroke, epsilon: Double(level) * 0.5)
-        }
-        if level >= 1 {
-            // Catmull-Rom smoothing
-            stroke = stabilizeStroke(stroke, tension: min(1.0, Double(level) * 0.5))
-        }
-        sig.strokes[i] = stroke
-        // Resize pressure/timestamp arrays to match
-        if sig.pressures[i].count != stroke.count {
-            sig.pressures[i] = Array(repeating: 0, count: stroke.count)
-        }
-        if sig.timestamps[i].count != stroke.count {
-            sig.timestamps[i] = Array(repeating: 0.0, count: stroke.count)
-        }
-    }
-}
+// MARK: - Completion Detection
 
-func rdpSimplify(_ points: [(Double, Double)], epsilon: Double) -> [(Double, Double)] {
-    guard points.count > 2 else { return points }
-    var maxDist = 0.0
-    var maxIdx = 0
+/// Smart signature completion: proximity-based + inter-stroke timeout + fallback
+struct CompletionDetector {
+    let interStrokeTimeout: TimeInterval   // max gap between strokes (1.5s)
+    let proximityTimeout: TimeInterval     // finalize after pen leaves proximity (0.5s)
+    let fallbackTimeout: TimeInterval      // absolute fallback (3s)
 
-    let (ax, ay) = points.first!
-    let (bx, by) = points.last!
-    let dx = bx - ax, dy = by - ay
-    let lenSq = dx*dx + dy*dy
+    var lastPenActivity: TimeInterval = 0
+    var lastProximity: TimeInterval = 0
+    var penLeftProximity = false
+    var hasPoints = false
 
-    for i in 1..<(points.count - 1) {
-        let dist: Double
-        if lenSq < 1e-10 {
-            let ex = points[i].0 - ax, ey = points[i].1 - ay
-            dist = sqrt(ex*ex + ey*ey)
-        } else {
-            let t = max(0, min(1, ((points[i].0 - ax)*dx + (points[i].1 - ay)*dy) / lenSq))
-            let px = ax + t*dx, py = ay + t*dy
-            let ex = points[i].0 - px, ey = points[i].1 - py
-            dist = sqrt(ex*ex + ey*ey)
-        }
-        if dist > maxDist { maxDist = dist; maxIdx = i }
+    init(interStroke: TimeInterval = 1.5, proximity: TimeInterval = 0.5, fallback: TimeInterval = 3.0) {
+        interStrokeTimeout = interStroke
+        proximityTimeout = proximity
+        fallbackTimeout = fallback
     }
 
-    if maxDist > epsilon {
-        let left = rdpSimplify(Array(points[0...maxIdx]), epsilon: epsilon)
-        let right = rdpSimplify(Array(points[maxIdx...]), epsilon: epsilon)
-        return Array(left.dropLast()) + right
+    mutating func onPenData(near: Bool, down: Bool) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if down || near { lastPenActivity = now; penLeftProximity = false }
+        if !near && !down && !penLeftProximity {
+            penLeftProximity = true
+            lastProximity = now
+        }
+        if down { hasPoints = true }
     }
-    return [points.first!, points.last!]
+
+    func shouldFinalize(penDown: Bool) -> Bool {
+        guard hasPoints && !penDown else { return false }
+        let now = ProcessInfo.processInfo.systemUptime
+        // Pen left proximity → quick finalize
+        if penLeftProximity && now - lastProximity > proximityTimeout { return true }
+        // Inter-stroke timeout
+        if now - lastPenActivity > interStrokeTimeout { return true }
+        // Absolute fallback
+        if now - lastPenActivity > fallbackTimeout { return true }
+        return false
+    }
+
+    mutating func reset() {
+        lastPenActivity = 0; lastProximity = 0; penLeftProximity = false; hasPoints = false
+    }
 }
 
 // MARK: - Signature Data
@@ -763,8 +783,8 @@ func sendNotification(_ title: String, _ message: String, sound: Bool = false) {
 
 /// Captures a signature without terminal interaction. Used by daemon and menu bar.
 /// Returns the SignatureData, or nil if nothing captured.
-func headlessCapture(device: String, model: TopazModel, timeout: TimeInterval = 10,
-                     stabilize: Int = 0) -> SignatureData? {
+func headlessCapture(device: String, model: TopazModel, timeout: TimeInterval = 3,
+                     stabilize: Int = 1) -> SignatureData? {
     let port: SerialPort
     do { port = try SerialPort(path: device, baud: model.baud, dataBits: model.format == 1 ? 7 : 8) }
     catch { return nil }
@@ -774,14 +794,13 @@ func headlessCapture(device: String, model: TopazModel, timeout: TimeInterval = 
     let sig = SignatureData(model: model)
     sig.captureStart = ProcessInfo.processInfo.systemUptime
     let reader = PacketReader(port: port, format: model.format)
-    var pf = PointFilter(size: model.filterPoints)
+    let euroFilter = OneEuroFilter(level: stabilize)
+    var cd = CompletionDetector(interStroke: min(timeout, 1.5), proximity: 0.5, fallback: timeout)
     var currentStroke: [(Double, Double)] = []
     var currentPressures: [Int] = []
     var currentTimestamps: [TimeInterval] = []
     var penWasDown = false
     var currentPressure = 0
-    var lastActivity = ProcessInfo.processInfo.systemUptime
-    var totalPoints = 0
 
     while true {
         if let packet = reader.next() {
@@ -790,29 +809,26 @@ func headlessCapture(device: String, model: TopazModel, timeout: TimeInterval = 
                 sig.tabletModel = packet.modelNumber; sig.tabletSerial = packet.serialNumber; continue
             }
             guard packet.isPenData else { continue }
-            lastActivity = ProcessInfo.processInfo.systemUptime
+            cd.onPenData(near: packet.penNear, down: packet.penDown)
 
             if packet.penDown {
                 let (rx, ry) = model.scaleCoords(rawX: packet.rawX, rawY: packet.rawY)
-                let (fx, fy) = pf.add(Int(rx), Int(ry))
+                let (fx, fy) = euroFilter.filter(x: rx, y: ry, timestamp: packet.timestamp)
                 if !penWasDown {
-                    currentStroke = [(Double(fx), Double(fy))]
+                    currentStroke = [(fx, fy)]
                     currentPressures = [currentPressure]; currentTimestamps = [packet.timestamp]
                     penWasDown = true
                 } else {
-                    currentStroke.append((Double(fx), Double(fy)))
+                    currentStroke.append((fx, fy))
                     currentPressures.append(currentPressure); currentTimestamps.append(packet.timestamp)
                 }
-                totalPoints += 1
             } else if penWasDown {
                 sig.addStroke(currentStroke, pressures: currentPressures, timestamps: currentTimestamps)
                 currentStroke = []; currentPressures = []; currentTimestamps = []
-                penWasDown = false; pf.clear()
-                lastActivity = ProcessInfo.processInfo.systemUptime
+                penWasDown = false; euroFilter.reset()
             }
         } else {
-            if totalPoints > 0 && !penWasDown &&
-               ProcessInfo.processInfo.systemUptime - lastActivity > timeout { break }
+            if cd.shouldFinalize(penDown: penWasDown) { break }
         }
     }
 
@@ -821,10 +837,7 @@ func headlessCapture(device: String, model: TopazModel, timeout: TimeInterval = 
         sig.addStroke(currentStroke, pressures: currentPressures, timestamps: currentTimestamps)
     }
     sig.captureEnd = ProcessInfo.processInfo.systemUptime
-
-    if sig.totalPoints < 5 { return nil }
-    if stabilize > 0 { stabilizeSignature(sig, level: stabilize) }
-    return sig
+    return sig.totalPoints >= 5 ? sig : nil
 }
 
 /// Saves all output formats and copies to clipboard. Returns base filename.
@@ -868,19 +881,20 @@ func cliCapture(device: String, model: TopazModel, output: String?, format: Stri
     print("Opening \(device) at \(model.baud) baud (8O1)...")
     print("Ready! Draw your signature on the pad.")
     print("Press Ctrl+C to save and exit.")
-    if timeout > 0 { print("Auto-saves after \(timeout)s of inactivity.") }
-    if stabilize > 0 { print("Stabilization level: \(stabilize)") }
+    let stabNames = ["off", "light (1-Euro)", "medium (1-Euro)", "heavy (1-Euro)"]
+    print("Stabilization: \(stabNames[min(stabilize, 3)])")
+    print("Finalize: pen leaves proximity, or \(timeout)s idle")
 
     let sig = SignatureData(model: model)
     sig.captureStart = ProcessInfo.processInfo.systemUptime
     let reader = PacketReader(port: port, format: model.format)
-    var pf = PointFilter(size: filterSize ?? model.filterPoints)
+    let euroFilter = OneEuroFilter(level: stabilize)
+    var cd = CompletionDetector(interStroke: min(Double(timeout), 1.5), proximity: 0.5, fallback: Double(timeout))
     var currentStroke: [(Double, Double)] = []
     var currentPressures: [Int] = []
     var currentTimestamps: [TimeInterval] = []
     var penWasDown = false
     var currentPressure = 0
-    var lastActivity = Date()
     var totalPoints = 0
 
     while captureRunning {
@@ -888,17 +902,18 @@ func cliCapture(device: String, model: TopazModel, output: String?, format: Stri
             if packet.isPressureData { currentPressure = packet.pressure; continue }
             if packet.isInfoData { sig.tabletModel = packet.modelNumber; sig.tabletSerial = packet.serialNumber; continue }
             guard packet.isPenData else { continue }
-            lastActivity = Date()
+            cd.onPenData(near: packet.penNear, down: packet.penDown)
+
             if packet.penDown {
                 let (rx, ry) = model.scaleCoords(rawX: packet.rawX, rawY: packet.rawY)
-                let (fx, fy) = pf.add(Int(rx), Int(ry))
+                let (fx, fy) = euroFilter.filter(x: rx, y: ry, timestamp: packet.timestamp)
                 if !penWasDown {
-                    currentStroke = [(Double(fx), Double(fy))]
+                    currentStroke = [(fx, fy)]
                     currentPressures = [currentPressure]; currentTimestamps = [packet.timestamp]
                     penWasDown = true
                     print("+", terminator: ""); fflush(stdout)
                 } else {
-                    currentStroke.append((Double(fx), Double(fy)))
+                    currentStroke.append((fx, fy))
                     currentPressures.append(currentPressure); currentTimestamps.append(packet.timestamp)
                 }
                 totalPoints += 1
@@ -906,12 +921,12 @@ func cliCapture(device: String, model: TopazModel, output: String?, format: Stri
             } else if penWasDown {
                 sig.addStroke(currentStroke, pressures: currentPressures, timestamps: currentTimestamps)
                 currentStroke = []; currentPressures = []; currentTimestamps = []
-                penWasDown = false; pf.clear()
+                penWasDown = false; euroFilter.reset()
                 print(" ", terminator: ""); fflush(stdout)
             }
         } else {
-            if timeout > 0 && totalPoints > 0 && Date().timeIntervalSince(lastActivity) > Double(timeout) {
-                print("\nAuto-saving after \(timeout)s of inactivity..."); break
+            if cd.shouldFinalize(penDown: penWasDown) {
+                print("\nAuto-saving..."); break
             }
         }
     }
@@ -923,7 +938,6 @@ func cliCapture(device: String, model: TopazModel, output: String?, format: Stri
     print("\nCapture complete: \(sig.totalPoints) points, \(sig.strokes.count) strokes")
     guard !sig.strokes.isEmpty else { print("No signature data captured."); return nil }
 
-    if stabilize > 0 { stabilizeSignature(sig, level: stabilize) }
     let base = saveSignature(sig, output: output, format: format, inkColor: inkColor, inkWidth: inkWidth, bgColor: bgColor)
     return base
 }
@@ -981,51 +995,45 @@ class TopazDaemon {
         sendNotification("Topaz Pad", "Signature pad connected and ready")
 
         let reader = PacketReader(port: port, format: model.format)
-        var pf = PointFilter(size: model.filterPoints)
+        let euroFilter = OneEuroFilter(level: stabilize)
+        var cd = CompletionDetector(interStroke: 1.5, proximity: 0.5, fallback: idleTimeout)
         var sig: SignatureData? = nil
         var currentStroke: [(Double, Double)] = []
         var currentPressures: [Int] = []
         var currentTimestamps: [TimeInterval] = []
         var penWasDown = false
         var currentPressure = 0
-        var lastPenActivity: TimeInterval = 0
 
         while running {
             if let packet = reader.next() {
                 if packet.isPressureData { currentPressure = packet.pressure; continue }
                 if packet.isInfoData { sig?.tabletModel = packet.modelNumber; sig?.tabletSerial = packet.serialNumber; continue }
                 guard packet.isPenData else { continue }
+                cd.onPenData(near: packet.penNear, down: packet.penDown)
+
                 if packet.penDown {
                     if sig == nil { sig = SignatureData(model: model); sig!.captureStart = ProcessInfo.processInfo.systemUptime; print("Capture started") }
                     let (rx, ry) = model.scaleCoords(rawX: packet.rawX, rawY: packet.rawY)
-                    let (fx, fy) = pf.add(Int(rx), Int(ry))
+                    let (fx, fy) = euroFilter.filter(x: rx, y: ry, timestamp: packet.timestamp)
                     if !penWasDown {
-                        currentStroke = [(Double(fx), Double(fy))]; currentPressures = [currentPressure]; currentTimestamps = [packet.timestamp]; penWasDown = true
+                        currentStroke = [(fx, fy)]; currentPressures = [currentPressure]; currentTimestamps = [packet.timestamp]; penWasDown = true
                     } else {
-                        currentStroke.append((Double(fx), Double(fy))); currentPressures.append(currentPressure); currentTimestamps.append(packet.timestamp)
+                        currentStroke.append((fx, fy)); currentPressures.append(currentPressure); currentTimestamps.append(packet.timestamp)
                     }
-                    lastPenActivity = ProcessInfo.processInfo.systemUptime
                 } else if penWasDown {
                     sig?.addStroke(currentStroke, pressures: currentPressures, timestamps: currentTimestamps)
-                    currentStroke = []; currentPressures = []; currentTimestamps = []; penWasDown = false; pf.clear()
-                    lastPenActivity = ProcessInfo.processInfo.systemUptime
+                    currentStroke = []; currentPressures = []; currentTimestamps = []; penWasDown = false; euroFilter.reset()
                 }
             } else {
-                if let s = sig, s.totalPoints >= 5 && !penWasDown && lastPenActivity > 0 {
-                    if ProcessInfo.processInfo.systemUptime - lastPenActivity > idleTimeout {
-                        if stabilize > 0 { stabilizeSignature(s, level: stabilize) }
-                        _ = saveSignature(s, inkColor: inkColor, inkWidth: inkWidth, dir: saveDir)
-                        sendNotification("Signature Captured", "\(s.totalPoints) points, \(s.strokes.count) strokes — copied to clipboard", sound: true)
-                        sig = nil; lastPenActivity = 0
-                    }
+                if let s = sig, s.totalPoints >= 5 && cd.shouldFinalize(penDown: penWasDown) {
+                    _ = saveSignature(s, inkColor: inkColor, inkWidth: inkWidth, dir: saveDir)
+                    sendNotification("Signature Captured", "\(s.totalPoints) points, \(s.strokes.count) strokes — copied to clipboard", sound: true)
+                    sig = nil; cd.reset(); euroFilter.reset()
                 }
             }
         }
         if penWasDown && currentStroke.count >= 2 { sig?.addStroke(currentStroke, pressures: currentPressures, timestamps: currentTimestamps) }
-        if let s = sig, s.totalPoints >= 5 {
-            if stabilize > 0 { stabilizeSignature(s, level: stabilize) }
-            _ = saveSignature(s, inkColor: inkColor, inkWidth: inkWidth, dir: saveDir)
-        }
+        if let s = sig, s.totalPoints >= 5 { _ = saveSignature(s, inkColor: inkColor, inkWidth: inkWidth, dir: saveDir) }
         port.close()
     }
 }

@@ -53,7 +53,14 @@ export interface RenderOptions {
   scale?: number;
 }
 
-export type TopazEvent = 'connect' | 'disconnect' | 'pendown' | 'penup' | 'point' | 'stroke' | 'pressure' | 'info' | 'error' | 'clear';
+export type TopazEvent = 'connect' | 'disconnect' | 'pendown' | 'penup' | 'point' | 'stroke' | 'pressure' | 'info' | 'error' | 'clear' | 'complete';
+
+export declare class OneEuroFilter {
+  constructor(mincutoff?: number, beta?: number, dcutoff?: number);
+  static fromLevel(level: number): OneEuroFilter;
+  filter(x: number, y: number, timestamp: number): { x: number; y: number };
+  reset(): void;
+}
 
 export declare function rdpSimplify(pts: Point[], epsilon: number): Point[];
 export declare function stabilize(pts: Point[], level?: number): Point[];
@@ -64,7 +71,7 @@ export declare function toPNG(strokes: Stroke[], opts?: RenderOptions): Promise<
 export declare function toSigString(strokes: Stroke[]): string;
 
 export declare class TopazPad {
-  constructor(model?: TopazModelName);
+  constructor(model?: TopazModelName, opts?: { stabilize?: number });
 
   readonly model: TopazModelConfig;
   readonly modelName: string;
@@ -85,6 +92,7 @@ export declare class TopazPad {
   on(event: 'info', fn: (info: DeviceInfo) => void): this;
   on(event: 'error', fn: (error: Error) => void): this;
   on(event: 'clear', fn: () => void): this;
+  on(event: 'complete', fn: (strokes: Stroke[]) => void): this;
   off(event: TopazEvent, fn: Function): this;
 
   connect(existingPort?: SerialPort): Promise<void>;

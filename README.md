@@ -335,6 +335,51 @@ pad.stream { packet in
 
 Compile with: `swiftc -O YourApp.swift lib/TopazKit.swift`
 
+## Stabilization
+
+We surveyed the state of the art in pen stroke stabilization to choose the best algorithm for signature capture.
+
+### Why not Catmull-Rom + RDP?
+
+Catmull-Rom is an *interpolation* technique (makes curves look smooth between points) and Ramer-Douglas-Peucker is a *simplification* technique (reduces point count). Neither addresses the fundamental **jitter-vs-lag tradeoff** — the core problem in pen input. They're output-stage algorithms, not input-stage.
+
+### The 1-Euro Filter (Casiez et al., CHI 2012)
+
+We use the **[1-Euro Filter](https://gery.casiez.net/1euro/)**, an adaptive low-pass filter that adjusts its cutoff frequency based on signal speed:
+
+- **Slow pen motion** (detail work): cutoff drops, heavy smoothing removes jitter
+- **Fast pen motion** (broad strokes): cutoff rises, minimal smoothing reduces lag
+- This matches human perception — we notice jitter when moving slowly and lag when moving fast
+
+The math is simple: an exponential moving average where the smoothing factor `alpha` is derived from an adaptive cutoff frequency `fc = fc_min + beta * |velocity|`. Two parameters to tune: `mincutoff` (jitter threshold) and `beta` (lag reduction).
+
+### Completion Detection
+
+Instead of a fixed 5-second timeout, we use **proximity-based completion**:
+
+1. **Pen leaves proximity** (bit 6 of status byte) → finalize in 0.5s
+2. **Inter-stroke gap** exceeds 1.5s → finalize
+3. **Absolute fallback** at 3s
+
+This makes capture feel instant — the pad knows when you've pulled the pen away.
+
+### Alternatives Considered
+
+| Algorithm | Used by | Tradeoff |
+|-----------|---------|----------|
+| **1-Euro Filter** | This project, Krita (conceptually) | Best jitter/lag balance, trivial to implement |
+| Spring-Mass-Damper | Google Ink Stroke Modeler, Inkscape | Natural feel, but rounds sharp corners |
+| Pulled String | Lazy Nezumi, Photoshop | Best for sharp corners, zero lag, but adds dead zone |
+| N-euro Predictor | Research (UbiComp 2023) | 36% better than 1-Euro, but requires neural network |
+| Moving Average | Procreate StreamLine | Simple but fixed lag proportional to window size |
+| Kalman Filter | Android stylus prediction | Excellent but moderate complexity |
+
+References:
+- [1-Euro Filter](https://gery.casiez.net/1euro/) — Casiez, Roussel, Vogel (CHI 2012)
+- [Google Ink Stroke Modeler](https://github.com/google/ink-stroke-modeler) — Spring-mass-damper pipeline
+- [N-euro Predictor](https://dl.acm.org/doi/abs/10.1145/3610884) — Wang et al. (UbiComp 2023)
+- [LaViola - Double Exp. Smoothing vs Kalman](https://cs.brown.edu/people/jlaviola/pubs/kfvsexp_final_laviola.pdf)
+
 ## How This Was Built
 
 1. Plugged in a Topaz T-LBK462-BSB-R — macOS recognized the FTDI chip automatically

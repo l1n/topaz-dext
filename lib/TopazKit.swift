@@ -250,47 +250,48 @@ public class TopazConnection {
     /// Read the next packet. Returns nil on timeout.
     public func nextPacket() -> TopazPacket? { reader.next() }
 
-    /// Blocking capture. Returns when pen is idle for `timeout` seconds.
-    public func capture(timeout: TimeInterval = 10, minPoints: Int = 5) -> TopazSignature? {
+    /// Blocking capture with 1-Euro filter and proximity-based completion.
+    /// Returns when pen leaves proximity (0.5s), inter-stroke gap (1.5s), or fallback timeout.
+    public func capture(timeout: TimeInterval = 3, stabilize: Int = 1, minPoints: Int = 5) -> TopazSignature? {
         let sig = TopazSignature(model: model)
-        var pf = PointFilter(size: model.filterPoints)
+        let euro = TopazOneEuroFilter(level: stabilize)
+        var lastPenActivity = 0.0, lastProximityLost = 0.0
+        var penLeftProximity = false, hasPoints = false
         var currentStroke: [(Double, Double)] = []
         var currentPressures: [Int] = []
         var currentTimestamps: [TimeInterval] = []
         var penWasDown = false
         var currentPressure = 0
-        var lastActivity = ProcessInfo.processInfo.systemUptime
-        var totalPoints = 0
 
         while true {
             if let packet = nextPacket() {
                 if packet.isPressureData { currentPressure = packet.pressure; continue }
                 guard packet.isPenData else { continue }
-                lastActivity = ProcessInfo.processInfo.systemUptime
+
+                let now = ProcessInfo.processInfo.systemUptime
+                if packet.penDown || packet.penNear { lastPenActivity = now; penLeftProximity = false }
+                if !packet.penNear && !packet.penDown && !penLeftProximity { penLeftProximity = true; lastProximityLost = now }
 
                 if packet.penDown {
+                    hasPoints = true
                     let (rx, ry) = model.scaleCoords(rawX: packet.rawX, rawY: packet.rawY)
-                    let (fx, fy) = pf.add(Int(rx), Int(ry))
+                    let (fx, fy) = euro.filter(x: rx, y: ry, t: packet.timestamp)
                     if !penWasDown {
-                        currentStroke = [(Double(fx), Double(fy))]
-                        currentPressures = [currentPressure]
-                        currentTimestamps = [packet.timestamp]
-                        penWasDown = true
+                        currentStroke = [(fx, fy)]; currentPressures = [currentPressure]; currentTimestamps = [packet.timestamp]; penWasDown = true
                     } else {
-                        currentStroke.append((Double(fx), Double(fy)))
-                        currentPressures.append(currentPressure)
-                        currentTimestamps.append(packet.timestamp)
+                        currentStroke.append((fx, fy)); currentPressures.append(currentPressure); currentTimestamps.append(packet.timestamp)
                     }
-                    totalPoints += 1
                 } else if penWasDown {
                     sig.addStroke(currentStroke, pressures: currentPressures, timestamps: currentTimestamps)
-                    currentStroke = []; currentPressures = []; currentTimestamps = []
-                    penWasDown = false; pf.clear()
-                    lastActivity = ProcessInfo.processInfo.systemUptime
+                    currentStroke = []; currentPressures = []; currentTimestamps = []; penWasDown = false; euro.reset()
+                    lastPenActivity = now
                 }
             } else {
-                if totalPoints >= minPoints && !penWasDown &&
-                   ProcessInfo.processInfo.systemUptime - lastActivity > timeout { break }
+                guard hasPoints && !penWasDown else { continue }
+                let now = ProcessInfo.processInfo.systemUptime
+                if (penLeftProximity && now - lastProximityLost > 0.5) ||
+                   (now - lastPenActivity > 1.5) ||
+                   (now - lastPenActivity > timeout) { break }
             }
         }
         if penWasDown && currentStroke.count >= 2 {
@@ -307,6 +308,46 @@ public class TopazConnection {
             }
         }
     }
+}
+
+// MARK: - 1-Euro Filter
+
+private class TopazOneEuroFilter {
+    let mincutoff, beta, dcutoff: Double
+    var xPrev = 0.0, dxPrev = 0.0, yPrev = 0.0, dyPrev = 0.0, tPrev = 0.0
+    var initialized = false
+
+    init(mincutoff: Double = 1.0, beta: Double = 0.007, dcutoff: Double = 1.0) {
+        self.mincutoff = mincutoff; self.beta = beta; self.dcutoff = dcutoff
+    }
+
+    convenience init(level: Int) {
+        switch level {
+        case 0: self.init(mincutoff: 100, beta: 0, dcutoff: 1)
+        case 1: self.init(mincutoff: 1.5, beta: 0.01, dcutoff: 1)
+        case 2: self.init(mincutoff: 0.8, beta: 0.005, dcutoff: 1)
+        default: self.init(mincutoff: 0.3, beta: 0.002, dcutoff: 1)
+        }
+    }
+
+    private func alpha(_ cutoff: Double, _ dt: Double) -> Double {
+        1.0 / (1.0 + 1.0 / (2.0 * .pi * cutoff * dt))
+    }
+
+    func filter(x: Double, y: Double, t: TimeInterval) -> (Double, Double) {
+        if !initialized { xPrev = x; yPrev = y; tPrev = t; initialized = true; return (x, y) }
+        let dt = max(0.001, t - tPrev); tPrev = t
+        let aD = alpha(dcutoff, dt)
+        let fdx = aD * ((x - xPrev) / dt) + (1 - aD) * dxPrev
+        let fdy = aD * ((y - yPrev) / dt) + (1 - aD) * dyPrev
+        dxPrev = fdx; dyPrev = fdy
+        let a = alpha(mincutoff + beta * sqrt(fdx*fdx + fdy*fdy), dt)
+        let fx = a * x + (1 - a) * xPrev; let fy = a * y + (1 - a) * yPrev
+        xPrev = fx; yPrev = fy
+        return (fx, fy)
+    }
+
+    func reset() { initialized = false; dxPrev = 0; dyPrev = 0 }
 }
 
 // MARK: - Internal
