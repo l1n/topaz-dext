@@ -3,8 +3,11 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: [index.html]
+    paths: [index.html, 'lib/**']
   workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: read
@@ -22,7 +25,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
