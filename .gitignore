@@ -1,0 +1,17 @@
+topaz
+Topaz.app/Contents/MacOS/Topaz
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.bmp
+*.pdf
+*.svg
+*.json
+*.sigstring
+*.zip
+*.jar
+__pycache__/
+.claude/
+decompiled/
+sigplus*/
