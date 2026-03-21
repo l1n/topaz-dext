@@ -229,6 +229,112 @@ Lines N+1..M: stroke endpoint indices (cumulative)
 
 Lines are delimited by `\r\n`. Stroke endpoints indicate where each pen-up occurs — the value is an index into the coordinate array.
 
+## JavaScript Library
+
+Use the Topaz protocol directly from your web app via CDN:
+
+```html
+<script type="module">
+import { TopazPad, toSVG, stabilize } from 'https://l1n.github.io/topaz-dext/lib/topaz.js';
+
+const pad = new TopazPad('SignatureGem1X5');
+
+// Events
+pad.on('connect', () => console.log('Connected'));
+pad.on('point', pt => console.log(`x=${pt.x} y=${pt.y} pressure=${pt.p}`));
+pad.on('stroke', stroke => console.log(`Stroke: ${stroke.length} points`));
+pad.on('pendown', () => console.log('Pen down'));
+pad.on('penup', () => console.log('Pen up'));
+
+// Connect (must be called from a user gesture)
+document.getElementById('btn').onclick = () => pad.connect();
+
+// After capturing, export:
+const svg = pad.toSVG({ inkColor: '#000080', inkWidth: 2 });
+const png = await pad.toPNG({ scale: 3 });
+const sigString = pad.toSigString();
+
+// Stabilize strokes
+const smoothed = pad.strokes.map(s => stabilize(s, 2));
+</script>
+```
+
+TypeScript definitions are included — use with your IDE or bundler:
+
+```typescript
+import { TopazPad, type Stroke, type Point } from 'https://l1n.github.io/topaz-dext/lib/topaz.js';
+// or copy lib/topaz.js + lib/topaz.d.ts into your project
+```
+
+### API
+
+| Export | Description |
+|--------|-------------|
+| `TopazPad(model?)` | Main class. Events: `connect`, `disconnect`, `pendown`, `penup`, `point`, `stroke`, `pressure`, `info`, `error` |
+| `toSVG(strokes, opts?)` | Render strokes to SVG string (auto-cropped, transparent) |
+| `toCanvas(strokes, opts?)` | Render to an offscreen `<canvas>` element |
+| `toPNG(strokes, opts?)` | Render to PNG `Blob` |
+| `toSigString(strokes)` | Export to Topaz SigString interchange format |
+| `stabilize(points, level)` | Catmull-Rom spline smoothing (level 0-3) |
+| `rdpSimplify(points, epsilon)` | Ramer-Douglas-Peucker simplification |
+| `strokesBounds(strokes)` | Compute bounding box |
+| `MODELS` | Model configuration database |
+
+Requires Web Serial API (Chrome 89+ / Edge 89+). See [browser support](https://caniuse.com/web-serial).
+
+## Swift Library (TopazKit)
+
+Drop [`lib/TopazKit.swift`](lib/TopazKit.swift) into your Xcode project or compile alongside your Swift code. No frameworks beyond Foundation and Darwin.
+
+```swift
+import Foundation
+// Add lib/TopazKit.swift to your target
+
+// Auto-detect and connect
+let pad = try TopazKit.open()
+
+// Blocking capture (returns when pen idle for 10s)
+if let sig = pad.capture(timeout: 10) {
+    let svg = sig.toSVG(inkColor: "#000000", inkWidth: 2)
+    let json = sig.toJSON()
+    let sigString = sig.toSigString()
+    print("\(sig.totalPoints) points, \(sig.strokes.count) strokes")
+}
+
+pad.close()
+```
+
+### Streaming API
+
+```swift
+let pad = try TopazKit.open(device: "/dev/cu.usbserial-TOPAZBSB")
+
+pad.stream { packet in
+    if packet.isPenData && packet.penDown {
+        let (x, y) = pad.model.scaleCoords(rawX: packet.rawX, rawY: packet.rawY)
+        print("x=\(x) y=\(y)")
+    }
+    return true  // return false to stop
+}
+```
+
+### API
+
+| Type | Description |
+|------|-------------|
+| `TopazKit.open(device?, model?)` | Connect to a pad (auto-detects if device is nil) |
+| `TopazKit.detectDevices()` | List connected pad device paths |
+| `TopazConnection.capture(timeout:)` | Blocking capture, returns `TopazSignature?` |
+| `TopazConnection.stream(_:)` | Stream raw packets via callback |
+| `TopazConnection.nextPacket()` | Read single packet (nil on timeout) |
+| `TopazSignature.toSVG(...)` | Export to SVG string |
+| `TopazSignature.toJSON()` | Export to JSON `Data` |
+| `TopazSignature.toSigString()` | Export to Topaz SigString format |
+| `TopazSignature.strokes` | Raw stroke data `[[(Double, Double)]]` |
+| `TopazModels.get(name)` | Get model config by name |
+
+Compile with: `swiftc -O YourApp.swift lib/TopazKit.swift`
+
 ## How This Was Built
 
 1. Plugged in a Topaz T-LBK462-BSB-R — macOS recognized the FTDI chip automatically
@@ -242,4 +348,4 @@ Lines are delimited by `\r\n`. Stroke endpoints indicate where each pen-up occur
 
 ## License
 
-MIT
+[MIT](LICENSE.md)
