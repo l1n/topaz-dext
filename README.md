@@ -6,11 +6,12 @@ Native macOS driver and capture tool for [Topaz Systems](https://www.topazsystem
 
 ## Features
 
-- **305KB native arm64 binary**, zero dependencies, single Swift file
+- **~300KB native arm64 binary**, zero dependencies, single Swift file
 - **Menu bar app** with auto-capture daemon (no dock icon, no terminal)
 - **CLI** for scripted capture, format conversion, comparison
 - **Auto-crop** with transparent background — paste directly into documents
-- **Stroke stabilization** (Catmull-Rom spline + Ramer-Douglas-Peucker simplification)
+- **Stroke stabilization** via [1-Euro adaptive filter](https://gery.casiez.net/1euro/) (Casiez et al., CHI 2012)
+- **Smart completion** — pen proximity detection, not a fixed timeout
 - **Export**: PNG, SVG, PDF, JPEG, TIFF, BMP, JSON, SigString
 - **Clipboard** integration — signatures copied automatically
 - **Biometric data** capture (velocity, acceleration, pressure, timing)
