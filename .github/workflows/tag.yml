@@ -1,0 +1,28 @@
+name: Auto-tag from package.json
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create tag if new version
+        run: |
+          version="v$(node -p 'require("./package.json").version')"
+          if git ls-remote --tags origin "$version" | grep -q "$version"; then
+            echo "Tag $version already exists, skipping"
+          else
+            git tag "$version"
+            git push origin "$version"
+            echo "Created tag $version"
+          fi
