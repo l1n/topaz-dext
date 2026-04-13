@@ -1,0 +1,42 @@
+{
+  "name": "topaz-dext",
+  "version": "0.1.0",
+  "description": "Topaz signature pad library — connect to Topaz USB pads via Web Serial API",
+  "type": "module",
+  "main": "./lib/topaz.js",
+  "module": "./lib/topaz.js",
+  "types": "./lib/topaz.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/topaz.d.ts",
+      "import": "./lib/topaz.js"
+    }
+  },
+  "files": [
+    "lib/topaz.js",
+    "lib/topaz.d.ts",
+    "LICENSE.md"
+  ],
+  "scripts": {
+    "prepublishOnly": "node -e \"import('./lib/topaz.js').then(m => { if (!m.TopazPad) throw 'missing TopazPad export' })\" --input-type=module"
+  },
+  "keywords": [
+    "topaz",
+    "signature",
+    "signature-pad",
+    "web-serial",
+    "serial",
+    "usb",
+    "handwriting"
+  ],
+  "author": "Nova DasSarma",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/l1n/topaz-dext.git"
+  },
+  "bugs": {
+    "url": "https://github.com/l1n/topaz-dext/issues"
+  },
+  "homepage": "https://l1n.github.io/topaz-dext/"
+}

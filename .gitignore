@@ -9,6 +9,7 @@ Topaz.app/Contents/MacOS/Topaz
 *.pdf
 *.svg
 *.json
+!package.json
 *.sigstring
 *.zip
 *.jar
