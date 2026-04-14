@@ -1,6 +1,6 @@
 {
   "name": "topaz-dext",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Topaz signature pad library — connect to Topaz USB pads via Web Serial API",
   "type": "module",
   "main": "./lib/topaz.js",
