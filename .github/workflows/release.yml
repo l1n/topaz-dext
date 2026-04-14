@@ -104,6 +104,5 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - run: npm i -g npm@latest
       - run: npm publish --provenance --access public
