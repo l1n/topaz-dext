@@ -38,5 +38,9 @@
   "bugs": {
     "url": "https://github.com/l1n/topaz-dext/issues"
   },
-  "homepage": "https://l1n.github.io/topaz-dext/"
+  "homepage": "https://l1n.github.io/topaz-dext/",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
 }
